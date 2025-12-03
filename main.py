@@ -16,48 +16,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1. INSTALLERA CACHE (Räddningen mot Yahoo-blockering!)
-# Sparar svar i 30 minuter. Stoppar 429-felen.
+# --- HÄR ÄR LÖSNINGEN PÅ 429-FELET ---
+# 1. Vi skapar ett "minne" (cache) som sparar svar i 30 minuter.
 session = requests_cache.CachedSession('yfinance.cache', expire_after=1800)
 
-# 2. FEJKA EN WEBBLÄSARE
-# Yahoo tror nu att vi är en vanlig användare, inte en robot.
+# 2. Vi låtsas vara en vanlig webbläsare (Chrome) så Yahoo inte blockerar oss.
 session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
-# 3. LÄTTVIKTS-AI (VADER)
-# Drar inget minne, funkar perfekt på din Starter-plan.
 analyzer = SentimentIntensityAnalyzer()
-print("Sentinel Engine Loaded (VADER Mode) 🚀")
+print("Sentinel Engine Loaded (VADER + Cache Mode) 🚀")
 
 @app.get("/")
 def root():
-    return {"status": "ok", "msg": "API is running with Cache protection"}
+    return {"status": "ok", "msg": "API running with Anti-Block protection"}
 
 @app.get("/calendar")
 def get_earnings_calendar():
+    # Vi kollar färre aktier för att vara snälla mot Yahoo
     watchlist = ["AAPL", "NVDA", "TSLA", "MSFT", "VOLV-B.ST", "ERIC-B.ST", "HM-B.ST"]
     upcoming = []
 
     for ticker in watchlist:
         try:
-            # Använd session=session för att använda cachen
+            # VIKTIGT: Vi skickar med 'session=session' här!
             stock = yf.Ticker(ticker, session=session)
             cal = stock.calendar
             
             if cal and "Earnings Date" in cal:
                 dates = cal["Earnings Date"]
                 next_date = dates[0] if isinstance(dates, list) else dates
-                
                 if next_date:
                     upcoming.append({
                         "ticker": ticker,
                         "date": next_date.strftime("%Y-%m-%d"),
                         "est_revenue": "N/A"
                     })
-            # Liten paus för att vara snäll mot Yahoo
-            time.sleep(random.uniform(0.5, 1.0))
+            # Liten paus för säkerhets skull
+            time.sleep(random.uniform(0.2, 0.5))
             
-        except Exception as e:
+        except Exception:
             continue
     
     upcoming.sort(key=lambda x: x['date'])
@@ -66,10 +63,11 @@ def get_earnings_calendar():
 @app.get("/earnings/{ticker}")
 def check_earnings(ticker: str):
     try:
+        # VIKTIGT: session=session här också!
         stock = yf.Ticker(ticker.upper(), session=session)
         news = stock.news
         
-        earnings_keywords = ["earnings", "report", "quarter", "q1", "q2", "q3", "q4", "resultat", "revenue"]
+        earnings_keywords = ["earnings", "report", "quarter", "resultat", "revenue", "profit"]
         earnings_news = []
         
         for item in news:
@@ -91,15 +89,9 @@ def check_earnings(ticker: str):
         if "beat" in full_text or "strong" in full_text: avg_score += 0.25
         if "miss" in full_text or "weak" in full_text: avg_score -= 0.25
 
-        if avg_score >= 0.05:
-            verdict = "STRONG BEAT 🚀"
-            color = "green"
-        elif avg_score <= -0.05:
-            verdict = "MISS / WEAK 🔻"
-            color = "red"
-        else:
-            verdict = "NEUTRAL"
-            color = "yellow"
+        if avg_score >= 0.05: verdict = "STRONG BEAT 🚀"; color = "green"
+        elif avg_score <= -0.05: verdict = "MISS / WEAK 🔻"; color = "red"
+        else: verdict = "NEUTRAL"; color = "yellow"
             
         return {"status": "Report Found", "verdict": verdict, "color": color, "headlines": earnings_news[:3]}
 
@@ -109,6 +101,7 @@ def check_earnings(ticker: str):
 @app.get("/analyze/{ticker}")
 def analyze_ticker(ticker: str):
     try:
+        # VIKTIGT: session=session här med!
         stock = yf.Ticker(ticker.upper(), session=session)
         news = stock.news
         
@@ -122,7 +115,6 @@ def analyze_ticker(ticker: str):
             headline = item.get("title", "")
             score = analyzer.polarity_scores(headline)['compound']
             label = "positive" if score >= 0.05 else "negative" if score <= -0.05 else "neutral"
-            
             analyzed_news.append({"headline": headline, "score": round(score, 2), "sentiment": label})
             total_score += score
             
@@ -135,5 +127,10 @@ def analyze_ticker(ticker: str):
             "sentiment_score": round(avg_score * 100, 0),
             "news_analysis": analyzed_news
         }
-    except Exception:
+    except Exception as e:
+        print(f"Error: {e}")
         return {"ticker": ticker, "final_sentiment": "Data Unavailable", "sentiment_score": 0, "news_analysis": []}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
